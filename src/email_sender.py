@@ -3,6 +3,11 @@
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.header import Header
+from email import charset as email_charset
+
+# 强制使用 UTF-8 编码所有邮件头
+email_charset.add_charset("utf-8", email_charset.SHORTEST, None, "utf-8")
 
 
 def send_email(
@@ -14,31 +19,30 @@ def send_email(
     language: str = "zh",
 ) -> None:
     title_map = {
-        "zh": f"每日 AI 摘要 {date}",
-        "en": f"Daily AI Summary {date}",
-        "bilingual": f"每日 AI 摘要 / Daily AI Summary {date}",
+        "zh": f"每日国际新闻简报 {date}",
+        "en": f"Daily International News Briefing {date}",
+        "bilingual": f"每日国际新闻简报 / Daily International News Briefing {date}",
     }
-    subject = title_map.get(language, f"每日 AI 摘要 {date}")
+    subject_str = title_map.get(language, f"每日国际新闻简报 {date}")
 
     # 支持逗号分隔的多个收件人
     recipients = [addr.strip() for addr in to_address.split(",") if addr.strip()]
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
+    msg["Subject"] = Header(subject_str, "utf-8")
     msg["From"] = smtp_user
     msg["To"] = ", ".join(recipients)
 
     # 纯文本版本
     msg.attach(MIMEText(summary_text, "plain", "utf-8"))
 
-    # HTML 版本：把 markdown 粗体/标题简单转换，方便手机阅读
+    # HTML 版本
     html_body = summary_text
     import re
     html_body = re.sub(r"^### (.+)$", r"<h3>\1</h3>", html_body, flags=re.MULTILINE)
     html_body = re.sub(r"^## (.+)$", r"<h2>\1</h2>", html_body, flags=re.MULTILINE)
     html_body = re.sub(r"^# (.+)$", r"<h1>\1</h1>", html_body, flags=re.MULTILINE)
     html_body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html_body)
-    # markdown 链接 [text](url) → <a href>
     html_body = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r'<a href="\2" style="color:#1a73e8">\1</a>', html_body)
     html_body = html_body.replace("\n", "<br>\n")
     html_body = f"<html><body style='font-family:sans-serif;max-width:800px;margin:auto;padding:20px'>{html_body}</body></html>"

@@ -1,4 +1,4 @@
-name: Daily Summary
+name: Daily News Briefing
 
 on:
   schedule:
@@ -11,6 +11,7 @@ permissions:
 jobs:
   summarize:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -23,18 +24,6 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Install Playwright browsers
-        if: ${{ env.TWITTER_COOKIES != '' }}
-        env:
-          TWITTER_COOKIES: ${{ secrets.TWITTER_COOKIES }}
-        run: playwright install chromium
-
-      - name: Restore Twitter cookies
-        if: ${{ env.TWITTER_COOKIES != '' }}
-        env:
-          TWITTER_COOKIES: ${{ secrets.TWITTER_COOKIES }}
-        run: echo "$TWITTER_COOKIES" | base64 -d > twitter_cookies.json
 
       - name: Restore dedup state cache
         uses: actions/cache@v4
@@ -50,16 +39,12 @@ jobs:
 
       - name: Run summary
         env:
-          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
-          SUPADATA_API_KEY: ${{ secrets.SUPADATA_API_KEY }}
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          LLM_MODEL: "deepseek-chat"
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          OUTPUT_MODE: both
+          OUTPUT_MODE: markdown
           NEWS_SUMMARY_STATE: ./state.json
         run: python -m src.runner
 

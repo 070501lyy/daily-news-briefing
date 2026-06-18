@@ -3,6 +3,12 @@
 import os
 from pathlib import Path
 
+# 如果存在 .env 文件则自动加载
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+if _env_path.exists():
+    import dotenv
+    dotenv.load_dotenv(_env_path)
+
 import yaml
 
 from src.fetchers import (
@@ -129,7 +135,13 @@ def fetch_all(sources: list[dict], global_max_entries: int = 3, global_max_age_d
     return items
 
 
-def run(config_path: str = "sources.yaml", output_dir: str = "summaries", api_key: str | None = None) -> str:
+def run(
+    config_path: str = "sources.yaml",
+    output_dir: str = "summaries",
+    api_key: str | None = None,
+    llm_model: str = "deepseek-chat",
+    llm_base_url: str = "https://api.deepseek.com",
+) -> str:
     """完整流程：抓取 → 总结 → 保存（Notion 或 Markdown）"""
     from datetime import datetime
 
@@ -153,7 +165,7 @@ def run(config_path: str = "sources.yaml", output_dir: str = "summaries", api_ke
     # 把"暂无更新"的条目排到末尾，使输出中有内容的来源优先显示
     valid_items.sort(key=lambda i: i.title == "暂无更新")
 
-    summary_text = summarize(valid_items, api_key=api_key, language=language)
+    summary_text = summarize(valid_items, api_key=api_key, model=llm_model, base_url=llm_base_url, language=language)
 
     output_mode = os.environ.get("OUTPUT_MODE", "markdown")  # notion | markdown | both
     today = datetime.now().strftime("%Y-%m-%d")
@@ -214,10 +226,12 @@ def run(config_path: str = "sources.yaml", output_dir: str = "summaries", api_ke
 
 
 if __name__ == "__main__":
-    api_key = os.environ.get("KIMI_API_KEY")
+    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
+    llm_model = os.environ.get("LLM_MODEL", "deepseek-chat")
+    llm_base_url = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com")
     if not api_key:
-        print("请设置环境变量 KIMI_API_KEY")
+        print("请设置环境变量 LLM_API_KEY 或 DEEPSEEK_API_KEY")
         exit(1)
 
-    out = run(api_key=api_key)
+    out = run(api_key=api_key, llm_model=llm_model, llm_base_url=llm_base_url)
     print(f"完成！\n{out}")

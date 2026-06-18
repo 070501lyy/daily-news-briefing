@@ -1,14 +1,14 @@
-"""使用 Claude 对抓取的内容进行总结
+"""使用 DeepSeek / 兼容 OpenAI 的 API 对抓取的内容进行总结
 
 架构说明（参考 follow-builders 的设计）：
   - prepare_digest()：纯数据整理，输出结构化 JSON，不调用 LLM
-  - summarize()：将 JSON 送给 Claude 生成可读摘要
+  - summarize()：将 JSON 送给 LLM 生成可读摘要
   两步分离，便于调试和复用。
 """
 
 import json
 import time
-from openai import OpenAI, BadRequestError, RateLimitError
+from openai import OpenAI, RateLimitError, BadRequestError, APIError
 from src.fetchers.base import RawItem
 
 _PROMPT_BASE = """
@@ -50,8 +50,8 @@ _PROMPT_BASE = """
 """
 
 _PROMPTS = {
-    "zh": f"""你是一个 AI 领域信息助手。我会给你一段 JSON，包含从多个来源抓取的最新内容。
-请全程使用中文输出，技术词汇（AI、LLM、API、RAG、token、agent 等）保留英文原文，人名和产品名保留英文。
+    "zh": f"""你是一个国际新闻与科技信息助手。我会给你一段 JSON，包含从多个来源抓取的最新内容。
+请全程使用中文输出，技术词汇（AI、LLM、API、quantum、space、genomics 等）保留英文原文，人名和产品名保留英文。
 
 ## 输出结构
 
@@ -63,7 +63,7 @@ _PROMPTS = {
 
 {_PROMPT_BASE}""",
 
-    "en": f"""You are an AI industry digest assistant. I will give you a JSON containing the latest content fetched from multiple sources.
+    "en": f"""You are an international news and science digest assistant. I will give you a JSON containing the latest content fetched from multiple sources.
 Output entirely in English.
 
 ## Output Structure
@@ -76,14 +76,14 @@ Go through each source one by one, with its name as a section heading.
 
 {_PROMPT_BASE}""",
 
-    "bilingual": f"""You are an AI industry digest assistant. I will give you a JSON containing the latest content fetched from multiple sources.
+    "bilingual": f"""You are an international news and science digest assistant. I will give you a JSON containing the latest content fetched from multiple sources.
 Output in bilingual format: Chinese and English interleaved paragraph by paragraph.
 
 Rules:
 - Section headings in both languages: e.g. "## 今日要点 / Today's Highlights"
 - For each item: write the Chinese paragraph first, then the English paragraph directly below (blank line between), then move to the next item
 - Do NOT output all Chinese first then all English
-- Technical terms (AI, LLM, API, RAG, token, agent, etc.) stay in English even in Chinese paragraphs
+- Technical terms (AI, LLM, API, quantum, space, genomics, etc.) stay in English even in Chinese paragraphs
 - Proper nouns (people, companies, products) stay in English
 
 ## Output Structure
@@ -122,12 +122,13 @@ def prepare_digest(items: list[RawItem]) -> dict:
 def summarize(
     items: list[RawItem],
     api_key: str | None = None,
-    model: str = "moonshot-v1-128k",
+    model: str = "deepseek-chat",
     language: str = "zh",
+    base_url: str = "https://api.deepseek.com",
 ) -> str:
-    """调用 Kimi 生成总结。
+    """调用 LLM (DeepSeek / OpenAI 兼容 API) 生成总结。
 
-    先通过 prepare_digest() 整理成 JSON，再送给 Kimi，
+    先通过 prepare_digest() 整理成 JSON，再送给 LLM，
     让 LLM 只做「读 JSON → 写文章」一件事，数据与生成解耦。
 
     language: "zh"（中文）| "en"（英文）| "bilingual"（中英双语交错）
@@ -141,7 +142,7 @@ def summarize(
 
     system_prompt = _PROMPTS.get(language, _PROMPTS["zh"])
 
-    client = OpenAI(api_key=api_key, base_url="https://api.moonshot.cn/v1")
+    client = OpenAI(api_key=api_key, base_url=base_url)
 
     def _call_api(payload: str) -> str:
         for attempt in range(3):
@@ -156,17 +157,23 @@ def summarize(
                 )
                 return response.choices[0].message.content
             except RateLimitError as e:
-                print(f"[Kimi 429] attempt {attempt + 1}/3: {e}")
+                print(f"[LLM 429] attempt {attempt + 1}/3: {e}")
                 if attempt < 2:
                     time.sleep(30 * (attempt + 1))
+                    continue
+                raise
+            except APIError as e:
+                print(f"[LLM API error] attempt {attempt + 1}/3: {e}")
+                if attempt < 2:
+                    time.sleep(10 * (attempt + 1))
                     continue
                 raise
         raise RuntimeError("unreachable")
 
     try:
         return _call_api(content)
-    except RateLimitError as e:
-        print(f"[Kimi fallback] 三次重试后仍 429，返回占位符。原始错误: {e}")
+    except RateLimitError:
+        print("[LLM fallback] 三次重试后仍 429，返回占位符。")
         fallback = {
             "zh": "今日摘要生成失败：API 负载过高，请稍后重试。",
             "en": "Summary generation failed: API engine overloaded. Please try again later.",
@@ -175,8 +182,15 @@ def summarize(
         return fallback.get(language, fallback["zh"])
     except BadRequestError as e:
         if "content_filter" not in str(e) and "high risk" not in str(e):
-            raise
-        # Full batch blocked — retry source-by-source, skipping blocked ones
+            print(f"[警告] 调用 LLM 失败: {e}")
+            fallback = {
+                "zh": f"今日摘要生成失败：{e}",
+                "en": f"Summary generation failed: {e}",
+                "bilingual": f"今日摘要生成失败：{e}\nSummary generation failed: {e}",
+            }
+            return fallback.get(language, fallback["zh"])
+
+        # 内容过滤，逐来源重试
         print("[警告] 全量内容被内容过滤器拦截，尝试按来源逐一重试...")
         by_source = {}
         for item in items:
@@ -190,21 +204,15 @@ def summarize(
             try:
                 _call_api(test_content)
                 passed_items.extend(source_items)
-            except BadRequestError as e2:
-                if "content_filter" in str(e2) or "high risk" in str(e2):
-                    print(f"[警告] 跳过被过滤的来源: {source_name}")
-                    skipped_sources.append(source_name)
-                else:
-                    raise
-            except RateLimitError:
-                # If rate limited mid-bisect, include the source optimistically
-                passed_items.extend(source_items)
+            except BadRequestError:
+                print(f"[警告] 跳过被过滤的来源: {source_name}")
+                skipped_sources.append(source_name)
 
         if not passed_items:
             fallback = {
-                "zh": "今日摘要生成失败：所有内容均被 API 内容过滤器拦截。",
-                "en": "Summary generation failed: all content was blocked by the API content filter.",
-                "bilingual": "今日摘要生成失败：所有内容均被 API 内容过滤器拦截。\nSummary generation failed: all content was blocked.",
+                "zh": "今日摘要生成失败：所有内容均被内容过滤器拦截。",
+                "en": "Summary generation failed: all content was blocked by the content filter.",
+                "bilingual": "今日摘要生成失败：所有内容均被内容过滤器拦截。\nSummary generation failed: all content was blocked.",
             }
             return fallback.get(language, fallback["zh"])
 
